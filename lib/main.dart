@@ -1,4 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
+import 'game/card.dart';
+import 'game/player.dart';
+import 'game/poker_action.dart';
+import 'game/poker_table.dart';
 
 void main() {
   runApp(const MyApp());
@@ -7,116 +14,584 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'Texas Poker',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.green,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const PokerPage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class PokerPage extends StatefulWidget {
+  const PokerPage({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<PokerPage> createState() => _PokerPageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _PokerPageState extends State<PokerPage> {
+  static const humanId = 'p0';
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+  late final PokerTable table;
+
+  Timer? aiTimer;
+  Timer? turnTimer;
+
+  int secondsLeft = 30;
+  int turnVersion = 0;
+
+  @override
+  void initState() {
+    super.initState();
+
+    table = PokerTable(
+      players: [
+        for (var i = 0; i < 8; i++)
+          Player(
+            id: 'p$i',
+            name: i == 0 ? 'You' : 'AI ${i}',
+            initialChips: 2000,
+            isHuman: i == 0,
+          ),
+      ],
+      dealerSeat: 0,
+    );
+
+    table.beginHand();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _afterStateChanged();
     });
   }
 
   @override
+  void dispose() {
+    aiTimer?.cancel();
+    turnTimer?.cancel();
+    super.dispose();
+  }
+
+  Player? get humanPlayer {
+    for (final player in table.players) {
+      if (player.id == humanId) {
+        return player;
+      }
+    }
+
+    return null;
+  }
+
+  bool get isHumanTurn => table.currentActor?.id == humanId;
+
+  void _afterStateChanged() {
+    aiTimer?.cancel();
+    turnTimer?.cancel();
+    turnVersion++;
+
+    if (!mounted || table.street == TableStreet.showdown) {
+      return;
+    }
+
+    final actor = table.currentActor;
+
+    if (actor == null) {
+      return;
+    }
+
+    if (actor.id == humanId) {
+      _startTurnTimer(actor.id);
+    } else {
+      _scheduleAi(actor.id);
+    }
+  }
+
+  void _startTurnTimer(String actorId) {
+    final version = ++turnVersion;
+
+    setState(() {
+      secondsLeft = 30;
+    });
+
+    turnTimer?.cancel();
+    turnTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || version != turnVersion) {
+        timer.cancel();
+        return;
+      }
+
+      if (table.currentActor?.id != actorId) {
+        timer.cancel();
+        return;
+      }
+
+      if (secondsLeft <= 1) {
+        timer.cancel();
+        _performAction(const PlayerAction(type: ActionType.fold));
+        return;
+      }
+
+      setState(() {
+        secondsLeft--;
+      });
+    });
+  }
+
+  void _scheduleAi(String actorId) {
+    turnTimer?.cancel();
+
+    aiTimer?.cancel();
+    aiTimer = Timer(const Duration(milliseconds: 550), () {
+      if (!mounted || table.currentActor?.id != actorId) {
+        return;
+      }
+
+      final legalActions = table.legalActions;
+
+      if (legalActions.contains(ActionType.call) && table.amountToCall > 0) {
+        _performAction(const PlayerAction(type: ActionType.call));
+      } else if (legalActions.contains(ActionType.check)) {
+        _performAction(const PlayerAction(type: ActionType.check));
+      } else if (legalActions.contains(ActionType.call)) {
+        _performAction(const PlayerAction(type: ActionType.call));
+      } else {
+        _performAction(const PlayerAction(type: ActionType.fold));
+      }
+    });
+  }
+
+  void _performAction(PlayerAction action) {
+    if (!mounted) {
+      return;
+    }
+
+    try {
+      table.act(action);
+      setState(() {});
+      _afterStateChanged();
+    } catch (error) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+    }
+  }
+
+  Future<void> _showRaiseDialog() async {
+    if (!isHumanTurn) {
+      return;
+    }
+
+    final round = table.bettingRound;
+    if (round == null) {
+      return;
+    }
+
+    final minimumTarget = round.minimumRaiseTo;
+    final maximumTarget = round.maximumRaiseTo;
+
+    if (maximumTarget < minimumTarget) {
+      _performAction(const PlayerAction(type: ActionType.allIn));
+      return;
+    }
+
+    final controller = TextEditingController(text: '$minimumTarget');
+
+    final target = await showDialog<int>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Raise to'),
+          content: TextField(
+            controller: controller,
+            keyboardType: TextInputType.number,
+            autofocus: true,
+            decoration: InputDecoration(
+              hintText: '$minimumTarget - $maximumTarget',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = int.tryParse(controller.text);
+
+                if (value == null ||
+                    value < minimumTarget ||
+                    value > maximumTarget) {
+                  return;
+                }
+
+                Navigator.pop(context, value);
+              },
+              child: const Text('Confirm'),
+            ),
+          ],
+        );
+      },
+    );
+
+    controller.dispose();
+
+    if (target != null && mounted) {
+      final type = table.currentBet == 0 ? ActionType.bet : ActionType.raise;
+
+      _performAction(PlayerAction(type: type, amount: target));
+    }
+  }
+
+  void _startNextHand() {
+    try {
+      if (table.street == TableStreet.showdown) {
+        table.completeHand();
+      }
+
+      table.beginHand();
+      setState(() {});
+      _afterStateChanged();
+    } catch (error) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+    }
+  }
+
+  String _streetName(TableStreet street) {
+    switch (street) {
+      case TableStreet.waiting:
+        return 'Waiting';
+      case TableStreet.preFlop:
+        return 'Pre-Flop';
+      case TableStreet.flop:
+        return 'Flop';
+      case TableStreet.turn:
+        return 'Turn';
+      case TableStreet.river:
+        return 'River';
+      case TableStreet.showdown:
+        return 'Showdown';
+      case TableStreet.complete:
+        return 'Complete';
+    }
+  }
+
+  String _playerStatus(Player player) {
+    switch (player.status) {
+      case PlayerStatus.active:
+        return player.id == table.currentActor?.id ? 'ACTING' : 'IN HAND';
+      case PlayerStatus.folded:
+        return 'FOLDED';
+      case PlayerStatus.allIn:
+        return 'ALL-IN';
+      case PlayerStatus.away:
+        return 'AWAY';
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
+    final human = humanPlayer;
+
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+        title: const Text('Texas Poker'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Center(child: Text('Street: ${_streetName(table.street)}')),
+          ),
+        ],
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          return Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1100),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    _buildTopInfo(human),
+                    const SizedBox(height: 16),
+                    _buildPlayers(),
+                    const SizedBox(height: 20),
+                    _buildBoard(),
+                    const SizedBox(height: 16),
+                    _buildActionArea(),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildTopInfo(Player? human) {
+    final actorName = table.currentActor?.name ?? '-';
+
+    return Row(
+      children: [
+        Expanded(child: _infoCard('Pot', '${table.potAmount}')),
+        const SizedBox(width: 8),
+        Expanded(child: _infoCard('Current actor', actorName)),
+        const SizedBox(width: 8),
+        Expanded(child: _infoCard('Your chips', '${human?.chips ?? 0}')),
+        const SizedBox(width: 8),
+        Expanded(child: _infoCard('Actions', '${table.actionHistory.length}')),
+      ],
+    );
+  }
+
+  Widget _infoCard(String title, String value) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.labelMedium),
+            const SizedBox(height: 4),
+            Text(value, style: Theme.of(context).textTheme.titleMedium),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlayers() {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: table.players.length,
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 260,
+        mainAxisExtent: 150,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+      ),
+      itemBuilder: (context, index) {
+        return _buildPlayerCard(table.players[index]);
+      },
+    );
+  }
+
+  Widget _buildPlayerCard(Player player) {
+    final isActing = player.id == table.currentActor?.id;
+
+    return Card(
+      color: isActing ? Theme.of(context).colorScheme.primaryContainer : null,
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    player.name,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                Text('${player.chips}'),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(_playerStatus(player)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                for (var i = 0; i < 2; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: _playingCard(
+                      player.holeCards.length > i ? player.holeCards[i] : null,
+                      hidden:
+                          !player.isHuman &&
+                          table.street != TableStreet.showdown,
+                    ),
+                  ),
+              ],
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+    );
+  }
+
+  Widget _buildBoard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            const Text(
+              'Community cards',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              children: [
+                for (var i = 0; i < 5; i++)
+                  _playingCard(
+                    table.communityCards.length > i
+                        ? table.communityCards[i]
+                        : null,
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _playingCard(PlayingCard? card, {bool hidden = false}) {
+    final text = card == null
+        ? ''
+        : hidden
+        ? '?'
+        : card.text;
+
+    final isRed = card?.suit.isRed ?? false;
+
+    return Container(
+      width: 48,
+      height: 64,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: hidden ? Colors.blueGrey.shade700 : Colors.white,
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(color: Colors.black26),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: hidden
+              ? Colors.white
+              : isRed
+              ? Colors.red
+              : Colors.black,
+          fontWeight: FontWeight.bold,
+          fontSize: 16,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActionArea() {
+    if (table.street == TableStreet.showdown) {
+      return _buildShowdown();
+    }
+
+    if (!isHumanTurn) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(18),
+          child: Text('AI is thinking...'),
+        ),
+      );
+    }
+
+    final legal = table.legalActions;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Text(
+              'Your turn: $secondsLeft seconds',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: [
+                if (legal.contains(ActionType.fold))
+                  FilledButton.tonal(
+                    onPressed: () => _performAction(
+                      const PlayerAction(type: ActionType.fold),
+                    ),
+                    child: const Text('Fold'),
+                  ),
+                if (legal.contains(ActionType.check))
+                  FilledButton(
+                    onPressed: () => _performAction(
+                      const PlayerAction(type: ActionType.check),
+                    ),
+                    child: const Text('Check'),
+                  ),
+                if (legal.contains(ActionType.call))
+                  FilledButton(
+                    onPressed: () => _performAction(
+                      const PlayerAction(type: ActionType.call),
+                    ),
+                    child: Text('Call ${table.amountToCall}'),
+                  ),
+                if (legal.contains(ActionType.bet) ||
+                    legal.contains(ActionType.raise))
+                  FilledButton(
+                    onPressed: _showRaiseDialog,
+                    child: Text(table.currentBet == 0 ? 'Bet' : 'Raise'),
+                  ),
+                if (legal.contains(ActionType.allIn))
+                  FilledButton(
+                    onPressed: () => _performAction(
+                      const PlayerAction(type: ActionType.allIn),
+                    ),
+                    child: const Text('All-in'),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildShowdown() {
+    final result = table.showdownResult;
+    final payouts = result?.payouts ?? const <String, int>{};
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            const Text(
+              'Hand complete',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            if (payouts.isEmpty)
+              const Text('No payout result')
+            else
+              for (final entry in payouts.entries)
+                Text('${entry.key} won ${entry.value} chips'),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: _startNextHand,
+              child: const Text('Next hand'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
