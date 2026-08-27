@@ -3,6 +3,7 @@ import 'card.dart';
 import 'deck.dart';
 import 'betting_round.dart';
 import 'player.dart';
+import 'showdown.dart';
 import 'poker_action.dart';
 
 enum TableStreet { waiting, preFlop, flop, turn, river, showdown, complete }
@@ -38,6 +39,7 @@ class PokerTable {
   final List<PlayingCard> communityCards = [];
   final List<PlayingCard> burnedCards = [];
   final List<ActionRecord> _completedActionHistory = [];
+  ShowdownResult? _showdownResult;
 
   int _dealerSeat;
   int? _smallBlindSeat;
@@ -61,6 +63,11 @@ class PokerTable {
   }
 
   BettingRound? get bettingRound => _bettingRound;
+
+  ShowdownResult? get showdownResult => _showdownResult;
+
+  Map<String, int> get payouts =>
+      _showdownResult?.payouts ?? const <String, int>{};
 
   Player? get currentActor => _bettingRound?.currentActor;
 
@@ -145,6 +152,7 @@ class PokerTable {
       ..shuffle();
 
     communityCards.clear();
+    _showdownResult = null;
     burnedCards.clear();
     _completedActionHistory.clear();
 
@@ -227,6 +235,7 @@ class PokerTable {
 
     if (round.handWonByFold) {
       street = TableStreet.showdown;
+      _settleCurrentHand();
       return;
     }
 
@@ -239,6 +248,7 @@ class PokerTable {
         _startStreet(TableStreet.river, 1);
       case TableStreet.river:
         street = TableStreet.showdown;
+        _settleCurrentHand();
       case TableStreet.waiting:
       case TableStreet.showdown:
       case TableStreet.complete:
@@ -246,6 +256,18 @@ class PokerTable {
     }
 
     _autoAdvanceIfAllIn();
+  }
+
+  void _settleCurrentHand() {
+    if (_showdownResult != null) {
+      return;
+    }
+
+    _showdownResult = ShowdownEngine.settle(
+      players: players,
+      communityCards: communityCards,
+      dealerSeat: _dealerSeat,
+    );
   }
 
   void _autoAdvanceIfAllIn() {
