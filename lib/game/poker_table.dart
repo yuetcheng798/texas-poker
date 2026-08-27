@@ -1,8 +1,9 @@
 import 'dart:math';
-
 import 'card.dart';
 import 'deck.dart';
+import 'betting_round.dart';
 import 'player.dart';
+import 'poker_action.dart';
 
 enum TableStreet { waiting, preFlop, flop, turn, river, showdown, complete }
 
@@ -17,15 +18,15 @@ class PokerTable {
        _dealerSeat = dealerSeat,
        _deck = Deck(random: random) {
     if (players.length < 2 || players.length > 8) {
-      throw ArgumentError('牌桌玩家数量必须在 2～8 人之间');
+      throw ArgumentError('table must contain 2 to 8 players');
     }
 
     if (smallBlind <= 0 || bigBlind <= smallBlind) {
-      throw ArgumentError('盲注设置不合法');
+      throw ArgumentError('blind configuration is invalid');
     }
 
     if (dealerSeat < 0 || dealerSeat >= players.length) {
-      throw ArgumentError('庄家座位不合法');
+      throw ArgumentError('dealer seat is invalid');
     }
   }
 
@@ -34,15 +35,18 @@ class PokerTable {
   final int bigBlind;
   final Deck _deck;
 
+  final List<PlayingCard> communityCards = [];
+  final List<PlayingCard> burnedCards = [];
+  final List<ActionRecord> _completedActionHistory = [];
+
   int _dealerSeat;
   int? _smallBlindSeat;
   int? _bigBlindSeat;
-  int? _currentActorSeat;
+
+  BettingRound? _bettingRound;
 
   int handNumber = 0;
   TableStreet street = TableStreet.waiting;
-
-  final List<PlayingCard> communityCards = [];
 
   Player get dealer => players[_dealerSeat];
 
@@ -56,9 +60,28 @@ class PokerTable {
     return seat == null ? null : players[seat];
   }
 
-  Player? get currentActor {
-    final seat = _currentActorSeat;
-    return seat == null ? null : players[seat];
+  BettingRound? get bettingRound => _bettingRound;
+
+  Player? get currentActor => _bettingRound?.currentActor;
+
+  int? get currentActorSeat => _bettingRound?.currentActorSeat;
+
+  int get currentBet => _bettingRound?.currentBet ?? 0;
+
+  int get amountToCall => _bettingRound?.amountToCall ?? 0;
+
+  List<ActionType> get legalActions {
+    return _bettingRound?.legalActions ?? const [];
+  }
+
+  int get potAmount {
+    return players.fold(0, (total, player) => total + player.handContribution);
+  }
+
+  List<ActionRecord> get actionHistory {
+    final currentHistory = _bettingRound?.history ?? const <ActionRecord>[];
+
+    return List.unmodifiable([..._completedActionHistory, ...currentHistory]);
   }
 
   List<Player> get playersInHand {
@@ -74,23 +97,25 @@ class PokerTable {
 
   List<Player> get playersAbleToAct {
     return players
-        .where((player) => player.status == PlayerStatus.active)
+        .where(
+          (player) => player.status == PlayerStatus.active && player.chips > 0,
+        )
         .toList(growable: false);
   }
 
-  /// 开始一手新牌：移动按钮、收取盲注、发两张底牌。
+  /// Starts a new hand, moves the dealer button, posts blinds,
+  /// and deals two hole cards to every participating player.
   void beginHand() {
     if (street != TableStreet.waiting && street != TableStreet.complete) {
-      throw StateError('当前牌局尚未结束');
+      throw StateError('the current hand has not ended');
     }
 
     final availableSeats = _availableSeats;
 
     if (availableSeats.length < 2) {
-      throw StateError('至少需要两名有筹码的玩家才能开始牌局');
+      throw StateError('at least two players with chips are required');
     }
 
-    // 只重置仍在牌桌上的玩家；away 玩家不会自动回来。
     for (final player in players) {
       if (player.status != PlayerStatus.away) {
         player.startHand();
@@ -100,15 +125,14 @@ class PokerTable {
     final activeSeats = _activeSeats;
 
     if (activeSeats.length < 2) {
-      throw StateError('至少需要两名有效玩家才能开始牌局');
+      throw StateError('at least two active players are required');
     }
 
     _dealerSeat = _seatAtOrAfter(_dealerSeat, activeSeats);
 
-    final isHeadsUp = activeSeats.length == 2;
+    final headsUp = activeSeats.length == 2;
 
-    if (isHeadsUp) {
-      // 单挑时：庄家同时是小盲，另一名玩家是大盲。
+    if (headsUp) {
       _smallBlindSeat = _dealerSeat;
       _bigBlindSeat = _nextSeat(_dealerSeat, activeSeats);
     } else {
@@ -121,42 +145,159 @@ class PokerTable {
       ..shuffle();
 
     communityCards.clear();
+    burnedCards.clear();
+    _completedActionHistory.clear();
 
     _dealHoleCards(activeSeats);
 
     players[_smallBlindSeat!].commit(smallBlind);
     players[_bigBlindSeat!].commit(bigBlind);
 
-    // 翻牌前：多人桌从大盲左侧开始；单挑由庄家先行动。
-    _currentActorSeat = isHeadsUp
+    final firstActor = headsUp
         ? _dealerSeat
         : _nextSeat(_bigBlindSeat!, activeSeats);
 
     handNumber++;
     street = TableStreet.preFlop;
+
+    _bettingRound = BettingRound(
+      players: players,
+      firstActorSeat: firstActor,
+      bigBlind: bigBlind,
+      openingBet: bigBlind,
+    );
+
+    _autoAdvanceIfAllIn();
   }
 
-  /// 本手牌结束后移动庄家按钮。
+  /// Applies one action and advances the table when the betting round ends.
+  void act(PlayerAction action) {
+    final round = _bettingRound;
+
+    if (round == null) {
+      throw StateError('there is no active betting round');
+    }
+
+    round.act(action);
+
+    if (round.isComplete) {
+      _advanceAfterBettingRound();
+    }
+  }
+
+  /// Ends the current hand and prepares the table for the next hand.
+  ///
+  /// Winner settlement will be added in the next stage.
   void completeHand() {
     if (street == TableStreet.waiting || street == TableStreet.complete) {
-      throw StateError('没有正在进行的牌局');
+      throw StateError('there is no active hand');
     }
+
+    final round = _bettingRound;
+    if (round != null) {
+      _completedActionHistory.addAll(round.history);
+    }
+
+    _bettingRound = null;
+    _smallBlindSeat = null;
+    _bigBlindSeat = null;
+    street = TableStreet.complete;
 
     final seatsForNextHand = players
         .where(
           (player) => player.status != PlayerStatus.away && player.chips > 0,
         )
-        .map((player) => players.indexOf(player))
+        .map(players.indexOf)
         .toList();
 
     if (seatsForNextHand.length >= 2) {
       _dealerSeat = _nextSeat(_dealerSeat, seatsForNextHand);
     }
+  }
 
-    _smallBlindSeat = null;
-    _bigBlindSeat = null;
-    _currentActorSeat = null;
-    street = TableStreet.complete;
+  void _advanceAfterBettingRound() {
+    final round = _bettingRound;
+
+    if (round == null || !round.isComplete) {
+      return;
+    }
+
+    _completedActionHistory.addAll(round.history);
+    _bettingRound = null;
+
+    if (round.handWonByFold) {
+      street = TableStreet.showdown;
+      return;
+    }
+
+    switch (street) {
+      case TableStreet.preFlop:
+        _startStreet(TableStreet.flop, 3);
+      case TableStreet.flop:
+        _startStreet(TableStreet.turn, 1);
+      case TableStreet.turn:
+        _startStreet(TableStreet.river, 1);
+      case TableStreet.river:
+        street = TableStreet.showdown;
+      case TableStreet.waiting:
+      case TableStreet.showdown:
+      case TableStreet.complete:
+        throw StateError('cannot advance from street $street');
+    }
+
+    _autoAdvanceIfAllIn();
+  }
+
+  void _autoAdvanceIfAllIn() {
+    final round = _bettingRound;
+
+    if (round != null && round.isComplete) {
+      _advanceAfterBettingRound();
+    }
+  }
+
+  void _startStreet(TableStreet nextStreet, int boardCardCount) {
+    for (final player in players) {
+      if (player.status != PlayerStatus.away) {
+        player.startStreet();
+      }
+    }
+
+    burnedCards.add(_deck.draw());
+    communityCards.addAll(_deck.drawMany(boardCardCount));
+    street = nextStreet;
+
+    final firstActor = _firstActingSeatAfterDealer();
+
+    _bettingRound = BettingRound(
+      players: players,
+      firstActorSeat: firstActor,
+      bigBlind: bigBlind,
+    );
+  }
+
+  void _dealHoleCards(List<int> activeSeats) {
+    for (var round = 0; round < 2; round++) {
+      for (var offset = 1; offset <= activeSeats.length; offset++) {
+        final seat = _seatAfterOffset(_dealerSeat, offset, activeSeats);
+        players[seat].receiveCard(_deck.draw());
+      }
+    }
+  }
+
+  int _firstActingSeatAfterDealer() {
+    for (var offset = 1; offset <= players.length; offset++) {
+      final seat = (_dealerSeat + offset) % players.length;
+      final player = players[seat];
+
+      if (player.status == PlayerStatus.active && player.chips > 0) {
+        return seat;
+      }
+    }
+
+    // All remaining players are all-in. The seat is only used as a
+    // placeholder because BettingRound will complete immediately.
+    return _dealerSeat;
   }
 
   List<int> get _availableSeats {
@@ -171,15 +312,6 @@ class PokerTable {
       for (var i = 0; i < players.length; i++)
         if (players[i].status == PlayerStatus.active) i,
     ];
-  }
-
-  void _dealHoleCards(List<int> activeSeats) {
-    for (var round = 0; round < 2; round++) {
-      for (var offset = 1; offset <= activeSeats.length; offset++) {
-        final seat = _seatAfterOffset(_dealerSeat, offset, activeSeats);
-        players[seat].receiveCard(_deck.draw());
-      }
-    }
   }
 
   int _seatAtOrAfter(int seat, List<int> seats) {
@@ -205,6 +337,7 @@ class PokerTable {
   int _seatAfterOffset(int seat, int offset, List<int> seats) {
     final currentIndex = seats.indexOf(seat);
     final startIndex = currentIndex < 0 ? 0 : currentIndex;
+
     return seats[(startIndex + offset) % seats.length];
   }
 }
