@@ -64,7 +64,7 @@ class _PokerPageState extends State<PokerPage> {
         for (var i = 0; i < 8; i++)
           Player(
             id: 'p$i',
-            name: i == 0 ? 'You' : 'AI ${i}',
+            name: i == 0 ? 'You' : 'AI $i',
             initialChips: 2000,
             isHuman: i == 0,
           ),

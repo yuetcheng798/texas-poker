@@ -1,6 +1,5 @@
 import 'hand_evaluator.dart';
 import 'player.dart';
-import 'poker_table.dart';
 import 'pot.dart';
 import 'card.dart';
 
