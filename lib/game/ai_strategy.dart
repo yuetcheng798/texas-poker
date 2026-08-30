@@ -41,12 +41,38 @@ class DifficultAiStrategy {
     final canCall = round.legalActions.contains(ActionType.call);
     final canFold = round.legalActions.contains(ActionType.fold);
 
+    // A call that consumes the whole remaining stack is an all-in call.
+    // Evaluate it separately from an ordinary call.
+    if (facing > 0 && facing >= player.chips) {
+      if (canCall &&
+          _shouldCallAllIn(
+            player: player,
+            round: round,
+            strength: strength,
+            activePlayers: activePlayers,
+          )) {
+        return AiDecision(
+          action: const PlayerAction(type: ActionType.call),
+          strength: strength,
+          reason: 'Strong enough to call the all-in.',
+        );
+      }
+
+      if (canFold) {
+        return AiDecision(
+          action: const PlayerAction(type: ActionType.fold),
+          strength: strength,
+          reason: 'The all-in price is too high for this hand.',
+        );
+      }
+    }
+
     if (strength >= 0.76) {
       if (canRaise) {
         return AiDecision(
           action: _raiseAction(round),
           strength: strength,
-          reason: '强牌：进行价值下注或加注。',
+          reason: 'Strong hand: make a value bet or raise.',
         );
       }
 
@@ -55,7 +81,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.allIn),
           strength: strength,
-          reason: '强牌且有效筹码较浅：全押获取最大价值。',
+          reason: 'Strong hand with a short effective stack: go all in.',
         );
       }
 
@@ -63,7 +89,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.call),
           strength: strength,
-          reason: '强牌：跟注当前下注。',
+          reason: 'Strong hand: call the current bet.',
         );
       }
 
@@ -71,7 +97,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.check),
           strength: strength,
-          reason: '强牌：过牌控制行动节奏。',
+          reason: 'Strong hand: check to control the action.',
         );
       }
     }
@@ -81,7 +107,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: _raiseAction(round),
           strength: strength,
-          reason: '中强牌且无人下注：利用位置压力进行主动下注。',
+          reason: 'Medium-strong hand: apply pressure when checked to.',
         );
       }
 
@@ -89,7 +115,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.call),
           strength: strength,
-          reason: '中等牌力：根据筹码压力跟注。',
+          reason: 'Medium hand: call within the stack pressure limit.',
         );
       }
 
@@ -97,7 +123,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.check),
           strength: strength,
-          reason: '中等牌力：过牌控制底池。',
+          reason: 'Medium hand: check and control the pot.',
         );
       }
 
@@ -105,7 +131,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.fold),
           strength: strength,
-          reason: '面对较大下注，放弃边缘牌力。',
+          reason: 'The bet is too large for a medium-strength hand.',
         );
       }
     }
@@ -117,7 +143,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.call),
           strength: strength,
-          reason: '边缘牌力且跟注成本较低：跟注看下一张牌。',
+          reason: 'Marginal hand with a cheap price: call one street.',
         );
       }
     }
@@ -126,14 +152,14 @@ class DifficultAiStrategy {
       return AiDecision(
         action: const PlayerAction(type: ActionType.check),
         strength: strength,
-        reason: '没有面对下注：免费过牌。',
+        reason: 'No bet to face: take the free check.',
       );
     }
 
     return AiDecision(
       action: const PlayerAction(type: ActionType.fold),
       strength: strength,
-      reason: '牌力不足：弃牌。',
+      reason: 'Insufficient hand strength: fold.',
     );
   }
 
@@ -164,8 +190,8 @@ class DifficultAiStrategy {
       }
     }
 
-    // 多人底池中，边缘牌力的实际胜率下降。
-    strength -= (activePlayers - 2).clamp(0, 6) * 0.025;
+    final extraPlayers = activePlayers > 2 ? activePlayers - 2 : 0;
+    strength -= extraPlayers.clamp(0, 6).toDouble() * 0.0125;
 
     if (style == AiStyle.aggressive) {
       strength += 0.035;
@@ -183,14 +209,10 @@ class DifficultAiStrategy {
     final low = first > second ? second : first;
 
     if (first == second) {
-      return 0.56 + (high - 2) * 0.025;
+      return (0.56 + (high - 2) * 0.025).clamp(0.0, 0.90).toDouble();
     }
 
     var strength = 0.27 + (high - 2) * 0.018;
-
-    if (first == second) {
-      strength += 0.16;
-    }
 
     if (cards[0].suit == cards[1].suit) {
       strength += 0.06;
@@ -234,6 +256,41 @@ class DifficultAiStrategy {
     }
   }
 
+  bool _shouldCallAllIn({
+    required Player player,
+    required BettingRound round,
+    required double strength,
+    required int activePlayers,
+  }) {
+    final callAmount = round.amountToCall;
+
+    if (callAmount <= 0 || callAmount > player.chips) {
+      return false;
+    }
+
+    final pot = round.players.fold<int>(
+      0,
+      (total, current) => total + current.handContribution,
+    );
+    final potAfterCall = pot + callAmount;
+
+    if (potAfterCall <= 0) {
+      return false;
+    }
+
+    final potOdds = callAmount / potAfterCall;
+
+    final minimumStrength = activePlayers >= 5
+        ? 0.76
+        : activePlayers >= 3
+        ? 0.70
+        : 0.62;
+
+    final safetyMargin = activePlayers >= 5 ? 0.08 : 0.05;
+
+    return strength >= minimumStrength && strength >= potOdds + safetyMargin;
+  }
+
   bool _canRaise(BettingRound round) {
     final hasRaise = round.legalActions.contains(ActionType.raise);
     final hasBet = round.legalActions.contains(ActionType.bet);
@@ -258,17 +315,16 @@ class DifficultAiStrategy {
   }
 
   int _affordableCall(Player player, double strength) {
-    final ratio = strength >= 0.6 ? 0.35 : 0.18;
+    final ratio = strength >= 0.60 ? 0.25 : 0.12;
     final amount = (player.chips * ratio).floor();
 
     return amount < 1 ? 1 : amount;
   }
 
   bool _hasFlushDraw(List<PlayingCard> holeCards, List<PlayingCard> board) {
-    final cards = [...holeCards, ...board];
     final counts = <Suit, int>{};
 
-    for (final card in cards) {
+    for (final card in [...holeCards, ...board]) {
       counts[card.suit] = (counts[card.suit] ?? 0) + 1;
     }
 

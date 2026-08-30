@@ -357,18 +357,6 @@ class BettingRound {
       return;
     }
 
-    final activePlayers = remainingPlayers
-        .where(
-          (player) => player.status == PlayerStatus.active && player.chips > 0,
-        )
-        .toList();
-
-    if (activePlayers.length <= 1) {
-      _isComplete = true;
-      _currentActorSeat = null;
-      return;
-    }
-
     if (_pendingPlayerIds.isEmpty) {
       _isComplete = true;
       _currentActorSeat = null;
