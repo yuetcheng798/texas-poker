@@ -10,7 +10,7 @@ class Player {
     this.isHuman = false,
   }) : chips = initialChips {
     if (initialChips < 0) {
-      throw ArgumentError('初始筹码不能为负数');
+      throw ArgumentError('initialChips cannot be negative');
     }
   }
 
@@ -23,10 +23,10 @@ class Player {
 
   final List<PlayingCard> holeCards = [];
 
-  /// 本手牌累计投入的筹码，用于主池和边池计算。
+  /// Total amount committed during the current hand.
   int handContribution = 0;
 
-  /// 当前下注街投入的筹码。
+  /// Amount committed during the current betting street.
   int streetContribution = 0;
 
   bool get canAct => status == PlayerStatus.active && chips > 0;
@@ -49,33 +49,46 @@ class Player {
 
   void receiveCard(PlayingCard card) {
     if (holeCards.length >= 2) {
-      throw StateError('每名玩家最多只能有两张底牌');
+      throw StateError('a player can only receive two hole cards');
     }
 
     holeCards.add(card);
   }
 
-  /// 投入筹码，返回实际投入的数量。
+  /// Commits chips to the pot and returns the actual amount committed.
   int commit(int amount) {
     if (amount < 0) {
-      throw ArgumentError('投入筹码不能为负数');
+      throw ArgumentError('commit amount cannot be negative');
     }
 
     if (!canAct) {
-      throw StateError('当前玩家不能下注');
+      throw StateError('player cannot act');
     }
 
-    final actual = amount > chips ? chips : amount;
+    final actualAmount = amount > chips ? chips : amount;
 
-    chips -= actual;
-    handContribution += actual;
-    streetContribution += actual;
+    chips -= actualAmount;
+    handContribution += actualAmount;
+    streetContribution += actualAmount;
 
     if (chips == 0) {
       status = PlayerStatus.allIn;
     }
 
-    return actual;
+    return actualAmount;
+  }
+
+  /// Spends chips outside the pot, such as buying a time card.
+  void spendChips(int amount) {
+    if (amount <= 0) {
+      throw ArgumentError('spend amount must be greater than zero');
+    }
+
+    if (amount > chips) {
+      throw StateError('not enough chips');
+    }
+
+    chips -= amount;
   }
 
   void fold() {

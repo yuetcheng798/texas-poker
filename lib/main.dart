@@ -6,6 +6,7 @@ import 'game/card.dart';
 import 'game/player.dart';
 import 'game/poker_action.dart';
 import 'game/poker_table.dart';
+import 'game/time_card.dart';
 
 void main() {
   runApp(const MyApp());
@@ -42,6 +43,7 @@ class _PokerPageState extends State<PokerPage> {
   static const humanId = 'p0';
 
   late final PokerTable table;
+  late final TimeCardManager timeCards;
 
   Timer? aiTimer;
   Timer? turnTimer;
@@ -52,6 +54,10 @@ class _PokerPageState extends State<PokerPage> {
   @override
   void initState() {
     super.initState();
+
+    timeCards = TimeCardManager()
+      ..startSession()
+      ..startHand();
 
     table = PokerTable(
       players: [
@@ -182,6 +188,28 @@ class _PokerPageState extends State<PokerPage> {
         context,
       ).showSnackBar(SnackBar(content: Text(error.toString())));
     }
+  }
+
+  void _useTimeCard() {
+    if (!isHumanTurn) {
+      return;
+    }
+
+    final human = humanPlayer;
+
+    if (human == null || !timeCards.canUse(human.chips)) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Time card is unavailable')));
+      return;
+    }
+
+    final result = timeCards.use(human.chips);
+    human.spendChips(100);
+
+    setState(() {
+      secondsLeft += result.bonusSeconds;
+    });
   }
 
   Future<void> _showRaiseDialog() async {
@@ -441,6 +469,19 @@ class _PokerPageState extends State<PokerPage> {
               'Community cards',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
+            const SizedBox(height: 8),
+            Text(
+              'Time cards: hand ${timeCards.usedThisHand}/${timeCards.handLimit} '
+              'session ${timeCards.usedThisSession}/${timeCards.sessionLimit}',
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: timeCards.canUse(humanPlayer?.chips ?? 0)
+                  ? _useTimeCard
+                  : null,
+              icon: const Icon(Icons.hourglass_top),
+              label: const Text('Use time card +30s'),
+            ),
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
@@ -516,6 +557,19 @@ class _PokerPageState extends State<PokerPage> {
             Text(
               'Your turn: $secondsLeft seconds',
               style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Time cards: hand ${timeCards.usedThisHand}/${timeCards.handLimit} '
+              'session ${timeCards.usedThisSession}/${timeCards.sessionLimit}',
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: timeCards.canUse(humanPlayer?.chips ?? 0)
+                  ? _useTimeCard
+                  : null,
+              icon: const Icon(Icons.hourglass_top),
+              label: const Text('Use time card +30s'),
             ),
             const SizedBox(height: 12),
             Wrap(
