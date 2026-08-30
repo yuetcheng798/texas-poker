@@ -79,6 +79,21 @@ class BettingRound {
     return amount > 0 ? amount : 0;
   }
 
+  bool get isFacingAllIn {
+    final actor = currentActor;
+
+    if (actor == null || amountToCall <= 0) {
+      return false;
+    }
+
+    return players.any(
+      (player) =>
+          player.id != actor.id &&
+          player.status == PlayerStatus.allIn &&
+          player.handContribution >= currentBet,
+    );
+  }
+
   int get minimumRaiseTo {
     if (currentBet == 0) {
       return bigBlind;

@@ -1,4 +1,4 @@
-import 'betting_round.dart';
+﻿import 'betting_round.dart';
 import 'card.dart';
 import 'hand_evaluator.dart';
 import 'player.dart';
@@ -41,7 +41,8 @@ class DifficultAiStrategy {
     final canCall = round.legalActions.contains(ActionType.call);
     final canFold = round.legalActions.contains(ActionType.fold);
 
-    // Treat a call that uses the remaining stack as an all-in decision.
+    // A call that consumes the whole remaining stack is an all-in call.
+    // Evaluate it separately from an ordinary call.
     final facingAllIn =
         round.isFacingAllIn || (facing > 0 && facing >= player.chips);
 
@@ -56,7 +57,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.call),
           strength: strength,
-          reason: 'Call all-in with enough equity and pot odds.',
+          reason: 'Call all-in with sufficient hand strength and pot odds.',
         );
       }
 
@@ -64,11 +65,10 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.fold),
           strength: strength,
-          reason: 'Fold against all-in with insufficient equity.',
+          reason: 'Fold against the all-in with insufficient equity.',
         );
       }
     }
-
     if (strength >= 0.76) {
       if (canRaise) {
         return AiDecision(
@@ -83,7 +83,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.allIn),
           strength: strength,
-          reason: 'Strong hand with a short stack: go all in.',
+          reason: 'Strong hand with a short effective stack: go all in.',
         );
       }
 
@@ -99,7 +99,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.check),
           strength: strength,
-          reason: 'Strong hand: check to control the pot.',
+          reason: 'Strong hand: check to control the action.',
         );
       }
     }
@@ -109,7 +109,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: _raiseAction(round),
           strength: strength,
-          reason: 'Medium-strong hand: apply pressure.',
+          reason: 'Medium-strong hand: apply pressure when checked to.',
         );
       }
 
@@ -117,7 +117,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.call),
           strength: strength,
-          reason: 'Medium hand: call within the stack limit.',
+          reason: 'Medium hand: call within the stack pressure limit.',
         );
       }
 
@@ -133,7 +133,7 @@ class DifficultAiStrategy {
         return AiDecision(
           action: const PlayerAction(type: ActionType.fold),
           strength: strength,
-          reason: 'The bet is too large for a medium hand.',
+          reason: 'The bet is too large for a medium-strength hand.',
         );
       }
     }
@@ -171,7 +171,7 @@ class DifficultAiStrategy {
     int activePlayers,
   ) {
     if (holeCards.length != 2) {
-      return 0.0;
+      return 0;
     }
 
     double strength;
@@ -193,7 +193,7 @@ class DifficultAiStrategy {
     }
 
     final extraPlayers = activePlayers > 2 ? activePlayers - 2 : 0;
-    strength -= extraPlayers * 0.0125;
+    strength -= extraPlayers.clamp(0, 6).toDouble() * 0.0125;
 
     if (style == AiStyle.aggressive) {
       strength += 0.035;
@@ -238,9 +238,9 @@ class DifficultAiStrategy {
   double _madeHandStrength(EvaluatedHand hand) {
     switch (hand.category) {
       case HandCategory.highCard:
-        return 0.24 + hand.tieBreakers.first / 100.0;
+        return 0.24 + hand.tieBreakers.first / 100;
       case HandCategory.pair:
-        return 0.43 + hand.tieBreakers.first / 100.0;
+        return 0.43 + hand.tieBreakers.first / 100;
       case HandCategory.twoPair:
         return 0.58;
       case HandCategory.threeOfAKind:
@@ -294,10 +294,10 @@ class DifficultAiStrategy {
   }
 
   bool _canRaise(BettingRound round) {
-    final hasBet = round.legalActions.contains(ActionType.bet);
     final hasRaise = round.legalActions.contains(ActionType.raise);
+    final hasBet = round.legalActions.contains(ActionType.bet);
 
-    return (hasBet || hasRaise) && round.maximumRaiseTo >= round.minimumRaiseTo;
+    return (hasRaise || hasBet) && round.maximumRaiseTo >= round.minimumRaiseTo;
   }
 
   PlayerAction _raiseAction(BettingRound round) {
@@ -356,3 +356,5 @@ class DifficultAiStrategy {
     return false;
   }
 }
+
+

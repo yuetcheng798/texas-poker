@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'game/ai_strategy.dart';
 import 'game/card.dart';
 import 'game/player.dart';
 import 'game/poker_action.dart';
@@ -43,6 +44,7 @@ class _PokerPageState extends State<PokerPage> {
   static const humanId = 'p0';
 
   late final PokerTable table;
+  late final DifficultAiStrategy aiStrategy;
   late final TimeCardManager timeCards;
 
   Timer? aiTimer;
@@ -54,6 +56,7 @@ class _PokerPageState extends State<PokerPage> {
   @override
   void initState() {
     super.initState();
+    aiStrategy = DifficultAiStrategy();
 
     timeCards = TimeCardManager()
       ..startSession()
@@ -155,22 +158,43 @@ class _PokerPageState extends State<PokerPage> {
     turnTimer?.cancel();
 
     aiTimer?.cancel();
-    aiTimer = Timer(const Duration(milliseconds: 550), () {
+    aiTimer = Timer(const Duration(milliseconds: 650), () {
       if (!mounted || table.currentActor?.id != actorId) {
         return;
       }
 
-      final legalActions = table.legalActions;
+      final actor = table.currentActor;
+      final round = table.bettingRound;
 
-      if (legalActions.contains(ActionType.call) && table.amountToCall > 0) {
-        _performAction(const PlayerAction(type: ActionType.call));
-      } else if (legalActions.contains(ActionType.check)) {
-        _performAction(const PlayerAction(type: ActionType.check));
-      } else if (legalActions.contains(ActionType.call)) {
-        _performAction(const PlayerAction(type: ActionType.call));
-      } else {
-        _performAction(const PlayerAction(type: ActionType.fold));
+      if (actor == null || round == null) {
+        return;
       }
+
+      final activePlayers = table.playersInHand
+          .where(
+            (player) =>
+                player.status != PlayerStatus.folded &&
+                player.status != PlayerStatus.away,
+          )
+          .length;
+
+      final decision = aiStrategy.decide(
+        player: actor,
+        communityCards: table.communityCards,
+        round: round,
+        activePlayers: activePlayers,
+      );
+
+      debugPrint(
+        'AI ${actor.name}: '
+        'action=${decision.action.type}, '
+        'strength=${decision.strength.toStringAsFixed(3)}, '
+        'facing=${round.amountToCall}, '
+        'allIn=${round.isFacingAllIn}, '
+        'activePlayers=$activePlayers',
+      );
+
+      _performAction(decision.action);
     });
   }
 
